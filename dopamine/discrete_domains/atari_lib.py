@@ -62,7 +62,8 @@ RainbowNetworkType = collections.namedtuple(
     'c51_network', ['q_values', 'logits', 'probabilities'])
 ImplicitQuantileNetworkType = collections.namedtuple(
     'iqn_network', ['quantile_values', 'quantiles'])
-
+NonDecreasingQuantileNetworkType=collections.namedtuple(
+    'ndqfn_network', ['base', 'increse','quantile_values'])
 
 
 

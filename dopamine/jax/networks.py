@@ -302,6 +302,97 @@ class ImplicitQuantileNetwork(nn.Module):
                                kernel_init=initializer)(x)
     return atari_lib.ImplicitQuantileNetworkType(quantile_values, quantiles)
 
+### Non-decreasing Quantile Function Network ###
+class NonDecreasingQuantileFNetwork(nn.Module):
+  """The Non-decreasing Quantile Function Network"""
+  num_actions: int
+  @nn.compact
+  def __call__(self, x):
+    x = nn.Dense(features=128)(x)
+    x = nn.sigmoid(x)
+    x = nn.Dense(features=self.num_actions)(x)
+    return jnp.expand_dims(x, axis=-2)
+
+class NonDecreasingQuantileGNetwork(nn.Module):
+  num_actions: int
+  @nn.compact
+  def __call__(self, x,y):
+    x = nn.Dense(features=128)(jnp.concatenate((x, y), axis=-1))
+    x = nn.relu(x)
+    x = nn.Dense(features=self.num_actions)(x)
+    x = nn.relu(x)
+    return x
+
+### Non-decreasing Quantile Function Network ###
+class NonDecreasingQuantileNetwork(nn.Module):
+  """The Non-decreasing Quantile Function Network"""
+  num_actions: int
+  num_quantiles: int
+  quantile_embedding_dim:int=64
+  inputs_preprocessed: bool = False
+  def setup(self):
+    self.quantiles=jnp.concatenate((jnp.array([0.001]), jnp.arange(1, self.num_quantiles) / self.num_quantiles, jnp.array([0.999]))).reshape([-1,1])
+      
+  def clacQ(self,base,increase):
+    quantiles_p=jnp.concatenate((jnp.array([0.001]), jnp.arange(1, self.num_quantiles) / self.num_quantiles, jnp.array([0.999])))
+    quantile_values=jnp.concatenate((base,increase), axis=-2)
+    quantile_values=quantile_values.swapaxes(-1,-2)
+    F_inverse=quantile_values.cumsum(-1)
+    return jnp.sum((quantiles_p[1:]-quantiles_p[:-1])*(F_inverse[...,1:]+F_inverse[...,:-1])/2,-1)
+
+  def sampletau(self,x,actions,num_sample_quantiles,rng):
+    base, increase = self.calc_base_increase(x)
+    quantiles = jax.random.uniform(rng, shape=(num_sample_quantiles,)).clip(0.001,0.999)
+    return self.interpolatetau(base,increase,actions,quantiles),quantiles
+
+  def interpolatetau(self,base,increase,actions,quantiles):
+    quantiles_p=jnp.concatenate((jnp.array([0.001]), jnp.arange(1, self.num_quantiles) / self.num_quantiles, jnp.array([0.999])))
+    quantile_values=jnp.concatenate((base,increase), axis=-2)
+    chosen_action_quantile_values = quantile_values[:,actions]
+    F_inverse=chosen_action_quantile_values.cumsum(-1)
+    index=jnp.searchsorted(quantiles_p,quantiles).clip(1,self.num_quantiles+1)
+    weight=(quantiles_p[index]-quantiles)/(quantiles_p[index]-quantiles_p[index-1])
+    return (1-weight)*F_inverse[...,index]+weight*F_inverse[...,index-1]
+
+  def __call__(self, x):
+    base, increase = self.calc_base_increase(x)
+    # ceiling=jax.searchsorted(quantile_net, taus).clip(0,num_quantiles+1)
+    # weight=(quantiles[ceiling]-taus)/(quantiles[ceiling]-jnp.where(ceiling,quantiles[ceiling-1],0))
+    # weight=weight+*(1-weight)
+    return atari_lib.NonDecreasingQuantileNetworkType(base, increase,self.clacQ(base,increase))
+
+  @nn.compact
+  def calc_base_increase(self, x):
+      initializer = nn.initializers.variance_scaling(
+        scale=1.0 / jnp.sqrt(3.0),
+        mode='fan_in',
+        distribution='uniform')
+      if not self.inputs_preprocessed:
+        x = preprocess_atari_inputs(x)
+      x = nn.Conv(features=32, kernel_size=(8, 8), strides=(4, 4),
+                kernel_init=initializer)(x)
+      x = nn.relu(x)
+      x = nn.Conv(features=64, kernel_size=(4, 4), strides=(2, 2),
+                kernel_init=initializer)(x)
+      x = nn.relu(x)
+      x = nn.Conv(features=64, kernel_size=(3, 3), strides=(1, 1),
+                kernel_init=initializer)(x)
+      x = nn.relu(x)
+      x = x.reshape((-1))  # flatten
+      state_vector_length = x.shape[-1]
+      quantile_net = jnp.tile(self.quantiles, [1, self.quantile_embedding_dim])
+      quantile_net = (
+        jnp.arange(1, self.quantile_embedding_dim + 1, 1).astype(jnp.float32)
+        * onp.pi
+        * quantile_net)
+      quantile_net = jnp.cos(quantile_net)
+      quantile_net = nn.Dense(features=state_vector_length,
+                            kernel_init=initializer)(quantile_net)
+      quantile_net = nn.relu(quantile_net)
+      base=NonDecreasingQuantileFNetwork(self.num_actions)(x)
+      increase=NonDecreasingQuantileGNetwork(self.num_actions)(x * quantile_net[1:],quantile_net[1:]-quantile_net[:-1])
+      return base,increase
+
 
 ### Quantile Networks ###
 @gin.configurable
