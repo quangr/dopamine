@@ -340,6 +340,21 @@ class NonDecreasingQuantileNetwork(nn.Module):
     F_inverse=quantile_values.cumsum(-1)
     return jnp.sum((quantiles_p[1:]-quantiles_p[:-1])*(F_inverse[...,1:]+F_inverse[...,:-1])/2,-1)
 
+  def clacDPE(self,other,x):
+    quantiles_p=jnp.concatenate((jnp.array([0.001]), jnp.arange(1, self.num_quantiles) / self.num_quantiles, jnp.array([0.999])))
+    base, increase = self.calc_base_increase(x)
+    quantile_values=jnp.concatenate((base,increase), axis=-2)
+    quantile_values=quantile_values.swapaxes(-1,-2)
+    self_F_inverse=quantile_values.cumsum(-1)
+
+    base, increase = other.calc_base_increase(x)
+    quantile_values=jnp.concatenate((base,increase), axis=-2)
+    quantile_values=quantile_values.swapaxes(-1,-2)
+    other_F_inverse=quantile_values.cumsum(-1)
+
+    F_inverse=jnp.abs(self_F_inverse-other_F_inverse)
+    return jnp.sum((quantiles_p[1:]-quantiles_p[:-1])*(F_inverse[...,1:]+F_inverse[...,:-1])/2,-1)
+
   def sampletau(self,x,actions,num_sample_quantiles,rng):
     base, increase = self.calc_base_increase(x)
     quantiles = jax.random.uniform(rng, shape=(num_sample_quantiles,)).clip(0.001,0.999)

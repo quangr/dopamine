@@ -86,7 +86,7 @@ def target_quantile_values(network_def, online_params, target_params,
       next_states,
       actions=next_qt_argmax,
       num_sample_quantiles=num_tau_prime_samples,
-      rng=rng2,
+      rng=rng2,#TODO to batch problem?
       method=network_def.sampletau
       )[0]
   target_quantile_vals = rewards + gamma_with_terminal * next_state_target_outputs
@@ -165,11 +165,74 @@ def train(network_def, online_params, target_params, optimizer, optimizer_state,
   return rng, optimizer_state, online_params, loss
 
 
-@functools.partial(jax.jit, static_argnums=(0, 4, 5, 6, 7, 8, 9, 11, 12))
+
+@functools.partial(jax.jit, static_argnums=(0, 3, 10, 11, 12, 13, 14, 15))
+def train_predictor(network_def, predictor_params, target_params, optimizer, optimizer_state,
+          states, actions, next_states, rewards, terminals, num_tau_samples,
+          num_tau_prime_samples, num_quantile_samples, cumulative_gamma,
+          double_dqn, kappa, rng):
+  """Run a training step."""
+  batch_size = states.shape[0]
+  def get_output(params,state, key,action):
+    return network_def.apply(
+    params,
+    state,
+    actions=action,
+    num_sample_quantiles=num_tau_prime_samples,
+    rng=key,
+    method=network_def.sampletau
+    )
+  def loss_fn(params, rng_input, target_quantile_vals):
+    batched_rng = jnp.stack(jax.random.split(rng_input, num=batch_size))
+    model_output = jax.vmap(get_output,in_axes=(None,0,0,0))(target_params,states, batched_target_rng,actions)
+    chosen_action_quantile_values = model_output[0][:, None]
+    quantiles=model_output[1]
+    # Shape of bellman_erors and huber_loss:
+    # batch_size x num_tau_prime_samples x num_tau_samples x 1.
+    bellman_errors = (target_quantile_vals-chosen_action_quantile_values)
+    # The huber loss (see Section 2.3 of the paper) is defined via two cases:
+    # case_one: |bellman_errors| <= kappa
+    # case_two: |bellman_errors| > kappa
+    huber_loss_case_one = (
+        (jnp.abs(bellman_errors) <= kappa).astype(jnp.float32) *
+        0.5 * bellman_errors ** 2)
+    huber_loss_case_two = (
+        (jnp.abs(bellman_errors) > kappa).astype(jnp.float32) *
+        kappa * (jnp.abs(bellman_errors) - 0.5 * kappa))
+    huber_loss = huber_loss_case_one + huber_loss_case_two
+    # Tile by num_tau_prime_samples along a new dimension. Shape is now
+    # batch_size x num_tau_prime_samples x num_tau_samples x 1.
+    # These quantiles will be used for computation of the quantile huber loss
+    # below (see section 2.3 of the paper).
+    # Shape: batch_size x num_tau_prime_samples x num_tau_samples x 1.
+    quantile_huber_loss = (jnp.abs(quantiles[:,None] - jax.lax.stop_gradient(
+        (bellman_errors < 0).astype(jnp.float32))) * huber_loss) / kappa
+    # Sum over current quantile value (num_tau_samples) dimension,
+    # average over target quantile value (num_tau_prime_samples) dimension.
+    # Shape: batch_size x num_tau_prime_samples x 1.
+    loss = jnp.sum(quantile_huber_loss, axis=2)
+    loss = jnp.mean(loss, axis=1)
+    return jnp.mean(loss)
+
+  rng, target_rng = jax.random.split(rng, num=2)
+  batched_target_rng = jnp.stack(jax.random.split(target_rng, num=batch_size))
+
+  model_output = jax.vmap(get_output,in_axes=(None,0,0,0))(target_params,states, batched_target_rng,actions)
+  target_quantile_vals = model_output[0][:, None]
+  grad_fn = jax.value_and_grad(loss_fn)
+  rng, rng_input = jax.random.split(rng)
+  loss, grad = grad_fn(predictor_params, rng_input, target_quantile_vals)
+  updates, optimizer_state = optimizer.update(grad, optimizer_state,
+                                              params=predictor_params)
+  online_params = optax.apply_updates(predictor_params, updates)
+  return rng, optimizer_state, online_params, loss
+
+
+@functools.partial(jax.jit, static_argnums=(0, 4, 5, 6, 7, 8, 9, 11, 12,13))
 def select_action(network_def, params, state, rng, num_quantile_samples,
                   num_actions, eval_mode, epsilon_eval, epsilon_train,
                   epsilon_decay_period, training_steps, min_replay_history,
-                  epsilon_fn):
+                  epsilon_fn,DPE):
   """Select an action from the set of available actions.
 
   Chooses an action randomly with probability self._calculate_epsilon(), and
@@ -205,10 +268,17 @@ def select_action(network_def, params, state, rng, num_quantile_samples,
 
   rng, rng1, rng2 = jax.random.split(rng, num=3)
   p = jax.random.uniform(rng1)
-  return rng, jnp.where(p <= epsilon,
-                        jax.random.randint(rng2, (), 0, num_actions),
-                        jnp.argmax(network_def.apply(
-                                params, state).quantile_values, axis=0))
+  if DPE:
+    return rng, jnp.where(p <= epsilon,
+                          jax.random.randint(rng2, (), 0, num_actions),
+                          jnp.argmax(network_def.apply(
+                                  params, state).quantile_values+network_def.apply(params,other=network_def.bind(
+                                  params),x=state,method=network_def.clacDPE), axis=0))
+  else:
+    return rng, jnp.where(p <= epsilon,
+                          jax.random.randint(rng2, (), 0, num_actions),
+                          jnp.argmax(network_def.apply(
+                                  params, state).quantile_values, axis=0))
 
 
 @gin.configurable
@@ -365,7 +435,8 @@ class JaxNonDecreasingQuantileStarAgent(dqn_agent.JaxDQNAgent):
                                            self.epsilon_decay_period,
                                            self.training_steps,
                                            self.min_replay_history,
-                                           self.epsilon_fn)
+                                           self.epsilon_fn,
+                                           self.DPE)
     self.action = onp.asarray(self.action)
     return self.action
 
@@ -401,7 +472,8 @@ class JaxNonDecreasingQuantileStarAgent(dqn_agent.JaxDQNAgent):
                                            self.epsilon_decay_period,
                                            self.training_steps,
                                            self.min_replay_history,
-                                           self.epsilon_fn)
+                                           self.epsilon_fn,
+                                           self.DPE)
     self.action = onp.asarray(self.action)
     return self.action
 
@@ -436,6 +508,25 @@ class JaxNonDecreasingQuantileStarAgent(dqn_agent.JaxDQNAgent):
             self.double_dqn,
             self.kappa,
             self._rng)
+        if self.DPE:
+          self._rng, self.optimizer_state, self.predictor_params, loss = train_predictor(
+              self.network_def,
+              self.predictor_params,
+              self.target_network_params,
+              self.predictor_optimizer,
+              self.predictor_optimizer_state,
+              self.preprocess_fn(self.replay_elements['state']),
+              self.replay_elements['action'],
+              self.preprocess_fn(self.replay_elements['next_state']),
+              self.replay_elements['reward'],
+              self.replay_elements['terminal'],
+              self.num_tau_samples,
+              self.num_tau_prime_samples,
+              self.num_quantile_samples,
+              self.cumulative_gamma,
+              self.double_dqn,
+              self.kappa,
+              self._rng)
         if (self.summary_writer is not None and
             self.training_steps > 0 and
             self.training_steps % self.summary_writing_frequency == 0):
