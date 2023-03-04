@@ -1,0 +1,37 @@
+# Hyperparameters follow Dabney et al. (2018), but we modify as necessary to
+# match those used in Rainbow (Hessel et al., 2018), to ensure apples-to-apples
+# comparison.
+import dopamine.jax.agents.non_decreasing_quantile.non_decreasing_quantile
+import dopamine.discrete_domains.atari_lib
+import dopamine.discrete_domains.run_experiment
+import dopamine.replay_memory.circular_replay_buffer
+
+JaxNonDecreasingQuantileStarAgent.kappa = 1.0
+JaxNonDecreasingQuantileStarAgent.num_tau_samples = 32
+JaxNonDecreasingQuantileStarAgent.num_tau_prime_samples = 32
+JaxNonDecreasingQuantileStarAgent.num_quantile_samples = 32
+JaxNonDecreasingQuantileStarAgent.gamma = 0.99
+JaxNonDecreasingQuantileStarAgent.update_horizon = 3
+JaxNonDecreasingQuantileStarAgent.min_replay_history = 20000 # agent steps
+JaxNonDecreasingQuantileStarAgent.update_period = 4
+JaxNonDecreasingQuantileStarAgent.target_update_period = 8000 # agent steps
+JaxNonDecreasingQuantileStarAgent.epsilon_train = 0.01
+JaxNonDecreasingQuantileStarAgent.epsilon_eval = 0.001
+JaxNonDecreasingQuantileStarAgent.epsilon_decay_period = 250000  # agent steps
+JaxNonDecreasingQuantileStarAgent.optimizer = 'adam'
+create_optimizer.learning_rate = 0.00005
+create_optimizer.eps = 0.0003125
+
+atari_lib.create_atari_environment.game_name = 'Hero'
+# Sticky actions with probability 0.25, as suggested by (Machado et al., 2017).
+atari_lib.create_atari_environment.sticky_actions = True
+create_runner.schedule = 'continuous_train'
+create_agent.agent_name = 'jax_non_decreasing_quantile'
+create_agent.debug_mode = True
+Runner.num_iterations = 200
+Runner.training_steps = 250000
+Runner.evaluation_steps = 125000
+Runner.max_steps_per_episode = 27000
+
+OutOfGraphReplayBuffer.replay_capacity = 1000000
+OutOfGraphReplayBuffer.batch_size = 32
