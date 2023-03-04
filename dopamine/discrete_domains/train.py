@@ -22,10 +22,12 @@ from absl import logging
 
 from dopamine.discrete_domains import run_experiment
 import tensorflow as tf
-
+import time
 
 flags.DEFINE_string('base_dir', None,
                     'Base directory to host all required sub-directories.')
+flags.DEFINE_boolean('wandb', False,
+                    'Wether or not use wandb')
 flags.DEFINE_multi_string(
     'gin_files', [], 'List of paths to gin configuration files (e.g.'
     '"dopamine/agents/dqn/dqn.gin").')
@@ -54,6 +56,14 @@ def main(unused_argv):
   gin_files = FLAGS.gin_files
   gin_bindings = FLAGS.gin_bindings
   run_experiment.load_gin_configs(gin_files, gin_bindings)
+  if FLAGS.wandb:
+    config=run_experiment.get_all_gin_parameters()
+    config=[v for k,v in config.items() if 'agent' in k[1] or 'environment' in k[1]]
+    from inspect import _empty
+    merged_dict = {k: v for d in config for k, v in d.items() if v is not _empty}
+    import wandb
+    run_name = f"{merged_dict['game_name']}__{merged_dict['agent_name']}__{int(time.time())}"
+    wandb.init(project="NDQFN", entity="quangr",sync_tensorboard=True,name=run_name,config=merged_dict)
   runner = run_experiment.create_runner(base_dir)
   runner.run_experiment()
 

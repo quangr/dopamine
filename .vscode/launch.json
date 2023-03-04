@@ -1,0 +1,49 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "non_decreasing_quantile_agent_test",
+            "type": "python",
+            "request": "launch",
+            "env": {"JAX_PLATFORM_NAME":"cpu"},
+            "args": ["tests.dopamine.jax.agents.non_decreasing_quantile.non_decreasing_quantile_agent_test.ImplicitQuantileAgentTest.testStepTrain"],
+            "module": "unittest",
+            "justMyCode": false
+        },
+        {
+            "name": "networks_test",
+            "type": "python",
+            "request": "launch",
+            "env": {"JAX_PLATFORM_NAME":"cpu"},
+            "args": ["tests.dopamine.jax.networks_test.NDQNNetworksTest"],
+            "module": "unittest",
+            "justMyCode": false
+        },      
+        {
+            "name": "Debug dopamine training",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/dopamine/discrete_domains/train.py",
+            "args": [
+                "--base_dir",
+                "/tmp/test/non_decreasing_quantile/dopamine_runs/Atlantis",
+                "--gin_files",
+                "dopamine/jax/agents/non_decreasing_quantile/configs/non_decreasing_quantile.gin",
+                "--gin_bindings",
+                "atari_lib.create_atari_environment.game_name='Atlantis'",
+                "--gin_bindings",
+                "JaxNonDecreasingQuantileStarAgent.min_replay_history = 200",
+                "--gin_bindings",
+                "JaxNonDecreasingQuantileStarAgent.DPE = True",
+                "--gin_bindings",
+                "Runner.num_iterations=20",
+                "--gin_bindings",
+                "create_agent.debug_mode = False",
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {"JAX_PLATFORM_NAME":"cpu"},
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}
